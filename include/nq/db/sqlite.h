@@ -12,12 +12,14 @@
 
 #include <sqlite3.h>
 
-namespace nqdb::sqlite {
+namespace nq::db::sqlite {
 
 class error : public std::runtime_error {
  public:
   using std::runtime_error::runtime_error;
 };
+
+namespace detail {
 
 template <typename T>
 inline constexpr bool is_optional = false;
@@ -29,16 +31,18 @@ concept integer_wrapper = requires(const T& wrapper) {
   { wrapper.value() } -> std::integral;
 };
 
+}  // namespace detail
+
 class statement {
  public:
   template <typename T>
   statement& bind(int parameter, const T& value) {
-    if constexpr (is_optional<T>) {
+    if constexpr (detail::is_optional<T>) {
       if (value) return bind(parameter, *value);
       check(sqlite3_bind_null(handle_.get(), parameter));
     } else if constexpr (std::integral<T>) {
       check(sqlite3_bind_int64(handle_.get(), parameter, static_cast<std::int64_t>(value)));
-    } else if constexpr (integer_wrapper<T>) {
+    } else if constexpr (detail::integer_wrapper<T>) {
       return bind(parameter, value.value());
     } else {
       const std::string_view text = value;
@@ -65,11 +69,11 @@ class statement {
 
   template <typename T>
   T get(int column) const {
-    if constexpr (is_optional<T>) {
+    if constexpr (detail::is_optional<T>) {
       return is_null(column) ? T{} : T{get<typename T::value_type>(column)};
     } else if constexpr (std::integral<T>) {
       return static_cast<T>(sqlite3_column_int64(handle_.get(), column));
-    } else if constexpr (integer_wrapper<T>) {
+    } else if constexpr (detail::integer_wrapper<T>) {
       return T{get<std::int64_t>(column)};
     } else {
       const auto* text = reinterpret_cast<const char*>(sqlite3_column_text(handle_.get(), column));
@@ -188,4 +192,4 @@ class transaction {
   bool open_ = true;
 };
 
-}  // namespace nqdb::sqlite
+}  // namespace nq::db::sqlite

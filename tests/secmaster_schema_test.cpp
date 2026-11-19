@@ -1,4 +1,4 @@
-#include <nqdb/secmaster/schema.h>
+#include <nq/db/secmaster/schema.h>
 
 #include <gtest/gtest.h>
 
@@ -13,8 +13,8 @@
 namespace {
 
 using namespace std::chrono_literals;
-using nqdb::sqlite::database;
-using nqdb::sqlite::error;
+using nq::db::sqlite::database;
+using nq::db::sqlite::error;
 
 database secmaster_with_two_listings_per_venue() {
   database secmaster = nqdb_test::secmaster_with_venues();
@@ -33,9 +33,9 @@ INSERT INTO listing_symbol (listing_id, source, symbol, valid_from) VALUES
 
 TEST(SecmasterSchema, CreateTablesStampsTheSchemaVersion) {
   database secmaster = nqdb_test::secmaster_with_venues();
-  nqdb::sqlite::statement version = secmaster.prepare("PRAGMA user_version");
+  nq::db::sqlite::statement version = secmaster.prepare("PRAGMA user_version");
   ASSERT_TRUE(version.next_row());
-  EXPECT_EQ(version.get<std::int64_t>(0), nqdb::secmaster::schema_version);
+  EXPECT_EQ(version.get<std::int64_t>(0), nq::db::secmaster::schema_version);
 }
 
 TEST(SecmasterSchema, AListingHasOneSymbolPerSourceAtATime) {
@@ -154,15 +154,87 @@ INSERT INTO instrument_identifier (instrument_id, scheme, value, valid_from)
   return secmaster;
 }
 
-TEST(SecmasterSchema, AListingIsDelistedOnce) {
-  database secmaster = secmaster_with_two_listings_per_venue();
-  EXPECT_NO_THROW(secmaster.run_script("UPDATE listing SET delisted_on = '2025-01-01' "
-                                       "WHERE listing_id = 2"));
-  EXPECT_THROW(secmaster.run_script("UPDATE listing SET delisted_on = '2026-01-01' "
-                                    "WHERE listing_id = 2"),
+TEST(SecmasterSchema, EveryTableButTheChangeLogLogsItsWrites) {
+  database secmaster = nqdb_test::secmaster_with_venues();
+  const auto count = [&](const std::string& rows_of_sqlite_schema) {
+    nq::db::sqlite::statement row =
+        secmaster.prepare("SELECT count(*) FROM sqlite_schema WHERE " + rows_of_sqlite_schema);
+    row.next_row();
+    return row.get<std::int64_t>(0);
+  };
+  const std::int64_t logged_tables =
+      count("type = 'table' AND name NOT LIKE 'sqlite~_%' ESCAPE '~'") - 1;
+
+  EXPECT_EQ(logged_tables, 16);
+  for (const char* write : {"insert", "update", "delete"}) {
+    EXPECT_EQ(count(std::string("type = 'trigger' AND name LIKE '%~_is~_logged~_after~_") + write +
+                    "' ESCAPE '~'"),
+              logged_tables);
+  }
+  EXPECT_EQ(count("type = 'trigger' AND tbl_name = 'change_log'"), 0);
+}
+
+TEST(SecmasterSchema, AChangeCarriesTheRowsOfItsOperation) {
+  database secmaster = nqdb_test::secmaster_with_venues();
+  const auto log = [&](const std::string& operation_old_row_new_row) {
+    secmaster.run_script("INSERT INTO change_log (table_name, operation, old_row, new_row) "
+                         "VALUES ('venue', " + operation_old_row_new_row + ")");
+  };
+  EXPECT_NO_THROW(log("'INSERT', NULL, '{}'"));
+  EXPECT_NO_THROW(log("'UPDATE', '{}', '{}'"));
+  EXPECT_NO_THROW(log("'DELETE', '{}', NULL"));
+  EXPECT_THROW(log("'INSERT', '{}', '{}'"), error);
+  EXPECT_THROW(log("'UPDATE', NULL, '{}'"), error);
+  EXPECT_THROW(log("'DELETE', '{}', '{}'"), error);
+  EXPECT_THROW(log("'UPSERT', '{}', '{}'"), error);
+  EXPECT_THROW(log("'UPDATE', '{}', 'not json'"), error);
+}
+
+TEST(SecmasterSchema, ADayIsClosedOrHasSpecialSessionsNotBoth) {
+  database secmaster = nqdb_test::secmaster_with_venues();
+  secmaster.run_script(R"sql(
+INSERT INTO closed_day (venue_id, day) VALUES (1, '2024-01-01');
+INSERT INTO special_session (venue_id, day, opens_minute, closes_minute)
+  VALUES (1, '2024-01-02', 570, 780);
+)sql");
+  EXPECT_THROW(secmaster.run_script("INSERT INTO special_session (venue_id, day, opens_minute, "
+                                    "closes_minute) VALUES (1, '2024-01-01', 570, 780)"),
                error);
-  EXPECT_THROW(secmaster.run_script("UPDATE listing SET delisted_on = NULL WHERE listing_id = 2"),
+  EXPECT_THROW(secmaster.run_script("INSERT INTO closed_day (venue_id, day) "
+                                    "VALUES (1, '2024-01-02')"),
                error);
+  EXPECT_NO_THROW(secmaster.run_script("INSERT INTO closed_day (venue_id, day) "
+                                       "VALUES (2, '2024-01-02')"));
+}
+
+TEST(SecmasterSchema, ASessionClosesAfterItOpensWithinTwoDaysOfItsTradingDay) {
+  database secmaster = nqdb_test::secmaster_with_venues();
+  const auto add_special = [&](const std::string& opens_minute_and_closes_minute) {
+    secmaster.run_script("DELETE FROM special_session; INSERT INTO special_session (venue_id, "
+                         "day, opens_minute, closes_minute) VALUES (1, '2024-01-02', " +
+                         opens_minute_and_closes_minute + ")");
+  };
+  const auto add_weekly = [&](const std::string& weekday_opens_minute_and_closes_minute) {
+    secmaster.run_script("DELETE FROM weekly_session; INSERT INTO weekly_session (venue_id, "
+                         "valid_from, weekday, opens_minute, closes_minute) "
+                         "VALUES (1, '2024-01-01', " + weekday_opens_minute_and_closes_minute +
+                         ")");
+  };
+  EXPECT_NO_THROW(add_special("570, 960"));
+  EXPECT_NO_THROW(add_special("-1440, 2880"));
+  EXPECT_THROW(add_special("960, 570"), error);
+  EXPECT_THROW(add_special("570, 570"), error);
+  EXPECT_THROW(add_special("-1441, 570"), error);
+  EXPECT_THROW(add_special("1440, 1500"), error);
+  EXPECT_THROW(add_special("570, 2881"), error);
+
+  EXPECT_NO_THROW(add_weekly("1, 570, 960"));
+  EXPECT_NO_THROW(add_weekly("7, -1440, 2880"));
+  EXPECT_THROW(add_weekly("0, 570, 960"), error);
+  EXPECT_THROW(add_weekly("8, 570, 960"), error);
+  EXPECT_THROW(add_weekly("1, 960, 570"), error);
+  EXPECT_THROW(add_weekly("1, -1441, 570"), error);
+  EXPECT_THROW(add_weekly("1, 570, 2881"), error);
 }
 
 struct validity_table {
@@ -333,14 +405,14 @@ TEST(SecmasterSchema, PermanentIdsAreNeverReused) {
   for (const auto& [table, id_column, insert_one_row] : permanent_ids) {
     const std::string newest_id = "SELECT max(" + id_column + ") FROM " + table;
     secmaster.run_script(insert_one_row);
-    nqdb::sqlite::statement deleted = secmaster.prepare(newest_id);
+    nq::db::sqlite::statement deleted = secmaster.prepare(newest_id);
     ASSERT_TRUE(deleted.next_row());
     const auto deleted_id = deleted.get<std::int64_t>(0);
     secmaster.run_script("DELETE FROM " + table + " WHERE " + id_column + " = " +
                          std::to_string(deleted_id));
 
     secmaster.run_script(insert_one_row);
-    nqdb::sqlite::statement reinserted = secmaster.prepare(newest_id);
+    nq::db::sqlite::statement reinserted = secmaster.prepare(newest_id);
     ASSERT_TRUE(reinserted.next_row());
     EXPECT_GT(reinserted.get<std::int64_t>(0), deleted_id) << table;
   }
@@ -351,11 +423,11 @@ TEST(SecmasterSchema, ArchiveWritesACopyNamedByDate) {
   database secmaster = secmaster_with_two_listings_per_venue();
 
   const std::filesystem::path dated_copy =
-      nqdb::secmaster::archive(secmaster, directory.path(), std::chrono::sys_days{2026y / 11 / 19});
+      nq::db::secmaster::archive(secmaster, directory.path(), std::chrono::sys_days{2026y / 11 / 19});
 
   EXPECT_EQ(dated_copy, directory.path() / "secmaster-2026-11-19.db");
   database reopened = database::open_read_only(dated_copy);
-  nqdb::sqlite::statement row = reopened.prepare("SELECT count(*) FROM listing");
+  nq::db::sqlite::statement row = reopened.prepare("SELECT count(*) FROM listing");
   ASSERT_TRUE(row.next_row());
   EXPECT_EQ(row.get<std::int64_t>(0), 3);
 }

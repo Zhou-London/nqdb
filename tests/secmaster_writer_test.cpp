@@ -1,4 +1,4 @@
-#include <nqdb/secmaster/writer.h>
+#include <nq/db/secmaster/writer.h>
 
 #include <gtest/gtest.h>
 
@@ -11,14 +11,18 @@
 #include <variant>
 #include <vector>
 
-#include <nqdb/secmaster/loader.h>
-#include <nqdb/secmaster/schema.h>
+#include <nq/db/secmaster/loader.h>
+#include <nq/db/secmaster/schema.h>
+
+#include "day_view.h"
 
 namespace {
 
 using namespace std::chrono_literals;
-using namespace nqdb::secmaster;
-using nqdb::sqlite::database;
+using namespace nq::db::secmaster;
+using nqdb_test::day_view;
+using nqdb_test::listing_on_day;
+using nq::db::sqlite::database;
 using std::chrono::days;
 using std::chrono::sys_days;
 
@@ -72,22 +76,22 @@ market market_with_acme_and_bolt_listed() {
   return market;
 }
 
-const listing& listing_of(const snapshot& loaded, listing_id id) {
+const listing_on_day& listing_of(const day_view& loaded, listing_id id) {
   return loaded.listings()[*loaded.listings().find(id)];
 }
 
 std::string acme_symbol_on(market& market, sys_days day) {
-  return listing_of(load_snapshot(market.secmaster, day, everything), market.acme_listing).symbol;
+  return listing_of(day_view(market.secmaster, day, everything), market.acme_listing).symbol;
 }
 
 std::int64_t count(database& secmaster, const std::string& table_and_filter) {
-  nqdb::sqlite::statement row = secmaster.prepare("SELECT count(*) FROM " + table_and_filter);
+  nq::db::sqlite::statement row = secmaster.prepare("SELECT count(*) FROM " + table_and_filter);
   row.next_row();
   return row.get<std::int64_t>(0);
 }
 
 std::string open_symbol(database& secmaster, listing_id listing) {
-  nqdb::sqlite::statement row = secmaster.prepare(
+  nq::db::sqlite::statement row = secmaster.prepare(
       "SELECT symbol FROM listing_symbol WHERE listing_id = ?1 AND source = 'VENUE' "
       "AND valid_until IS NULL");
   row.bind(1, listing);
@@ -96,10 +100,10 @@ std::string open_symbol(database& secmaster, listing_id listing) {
 
 TEST(SecmasterWriter, AddedRecordsLoadWithTheValuesGiven) {
   market market = market_with_acme_and_bolt_listed();
-  const snapshot loaded = load_snapshot(market.secmaster, listing_day, everything);
+  const day_view loaded = day_view(market.secmaster, listing_day, everything);
 
   ASSERT_EQ(loaded.listings().size(), 2u);
-  const listing& acme_listing = listing_of(loaded, market.acme_listing);
+  const listing_on_day& acme_listing = listing_of(loaded, market.acme_listing);
   EXPECT_EQ(acme_listing.id, market.acme_listing);
   EXPECT_EQ(acme_listing.symbol, "ACME");
   EXPECT_EQ(acme_listing.currency, "TST");
@@ -164,7 +168,7 @@ TEST(SecmasterWriter, AddInstrumentStoresTheSpecOfItsAssetClass) {
   const instrument_id added_option = list(asset_class::option, option, "ACME P50");
   const instrument_id added_pair = list(asset_class::crypto, pair, "FOOBAR");
 
-  const snapshot loaded = load_snapshot(market.secmaster, listing_day, everything);
+  const day_view loaded = day_view(market.secmaster, listing_day, everything);
   const auto spec_of = [&](instrument_id id) {
     return loaded.instruments()[*loaded.instruments().find(id)].spec;
   };
@@ -215,7 +219,7 @@ TEST(SecmasterWriter, AFailedStepLeavesNoPartOfTheRecordBehind) {
   EXPECT_THROW(add_instrument(market.secmaster, {.asset_class = asset_class::future,
                                                  .name = "Orphan", .issuer = {}, .cfi = {},
                                                  .spec = future_on_a_missing_underlying}),
-               nqdb::sqlite::error);
+               nq::db::sqlite::error);
   EXPECT_EQ(count(market.secmaster, "instrument"), 2);
 
   EXPECT_THROW(add_listing(market.secmaster,
@@ -227,13 +231,13 @@ TEST(SecmasterWriter, AFailedStepLeavesNoPartOfTheRecordBehind) {
                             .symbol = "ACME",
                             .spec = {.lot_size = quantity_nanos{nanos_per_unit}, .min_qty = {},
                                      .tick_rule = market.cent}}),
-               nqdb::sqlite::error);
+               nq::db::sqlite::error);
   EXPECT_EQ(count(market.secmaster, "listing"), 2);
 
   EXPECT_THROW(add_tick_rule(market.secmaster, "EMPTY", {}), error);
   const std::array same_price_twice{tick_band{price_nanos{0}, price_nanos{1}},
                                     tick_band{price_nanos{0}, price_nanos{2}}};
-  EXPECT_THROW(add_tick_rule(market.secmaster, "TWICE", same_price_twice), nqdb::sqlite::error);
+  EXPECT_THROW(add_tick_rule(market.secmaster, "TWICE", same_price_twice), nq::db::sqlite::error);
   EXPECT_EQ(count(market.secmaster, "tick_rule"), 1);
 }
 
@@ -250,7 +254,7 @@ TEST(SecmasterWriter, AssignSymbolAddsTheFirstSymbolOfAnotherSource) {
   market market = market_with_acme_and_bolt_listed();
   assign_symbol(market.secmaster, market.acme_listing, "VENDOR", "ACME.T", rename_day);
 
-  const snapshot loaded = load_snapshot(market.secmaster, rename_day, everything);
+  const day_view loaded = day_view(market.secmaster, rename_day, everything);
   const venue_index test_exchange = *loaded.find_venue("XTST");
   EXPECT_EQ(loaded.find_listing("VENDOR", test_exchange, "ACME.T"),
             loaded.listings().find(market.acme_listing));
@@ -262,9 +266,9 @@ TEST(SecmasterWriter, AssignSymbolBeforeTheCurrentOneStartedChangesNothing) {
   market market = market_with_acme_and_bolt_listed();
   EXPECT_THROW(
       assign_symbol(market.secmaster, market.acme_listing, "VENUE", "ACMX", listing_day - days{1}),
-      nqdb::sqlite::error);
+      nq::db::sqlite::error);
   EXPECT_THROW(assign_symbol(market.secmaster, market.acme_listing, "VENUE", "ACMX", listing_day),
-               nqdb::sqlite::error);
+               nq::db::sqlite::error);
   EXPECT_EQ(acme_symbol_on(market, listing_day), "ACME");
 }
 
@@ -278,11 +282,11 @@ TEST(SecmasterWriter, AssignListingSpecAppliesFromTheDayGiven) {
                        .tick_rule = fine},
                       rename_day);
 
-  const snapshot before = load_snapshot(market.secmaster, rename_day - days{1}, everything);
+  const day_view before = day_view(market.secmaster, rename_day - days{1}, everything);
   EXPECT_EQ(listing_of(before, market.acme_listing).lot_size, quantity_nanos{nanos_per_unit});
   EXPECT_EQ(before.tick_rules()[listing_of(before, market.acme_listing).tick_rule].name, "CENT");
 
-  const snapshot after = load_snapshot(market.secmaster, rename_day, everything);
+  const day_view after = day_view(market.secmaster, rename_day, everything);
   EXPECT_EQ(listing_of(after, market.acme_listing).lot_size, quantity_nanos{100 * nanos_per_unit});
   EXPECT_EQ(listing_of(after, market.acme_listing).min_qty, quantity_nanos{nanos_per_unit});
   EXPECT_EQ(after.tick_rules()[listing_of(after, market.acme_listing).tick_rule].name, "FINE");
@@ -299,9 +303,9 @@ TEST(SecmasterWriter, WritesToOneListingLeaveTheOtherUnchanged) {
                       rename_day);
   delist(market.secmaster, market.acme_listing, delisting_day);
 
-  const snapshot loaded = load_snapshot(market.secmaster, delisting_day, everything);
+  const day_view loaded = day_view(market.secmaster, delisting_day, everything);
   ASSERT_EQ(loaded.listings().size(), 1u);
-  const listing& bolt = listing_of(loaded, market.bolt_listing);
+  const listing_on_day& bolt = listing_of(loaded, market.bolt_listing);
   EXPECT_EQ(bolt.symbol, "BOLT");
   EXPECT_EQ(bolt.lot_size, quantity_nanos{nanos_per_unit});
   EXPECT_EQ(loaded.tick_rules()[bolt.tick_rule].name, "CENT");
@@ -312,9 +316,9 @@ TEST(SecmasterWriter, DelistEndsTheListingWithItsSymbolsAndSpec) {
   assign_symbol(market.secmaster, market.acme_listing, "VENDOR", "ACME.T", listing_day);
   delist(market.secmaster, market.acme_listing, delisting_day);
 
-  EXPECT_EQ(load_snapshot(market.secmaster, delisting_day - days{1}, everything).listings().size(),
+  EXPECT_EQ(day_view(market.secmaster, delisting_day - days{1}, everything).listings().size(),
             2u);
-  EXPECT_EQ(load_snapshot(market.secmaster, delisting_day, everything).listings().size(), 1u);
+  EXPECT_EQ(day_view(market.secmaster, delisting_day, everything).listings().size(), 1u);
   EXPECT_EQ(count(market.secmaster, "listing_symbol WHERE listing_id = 1 "
                                     "AND valid_until = '2025-01-01'"),
             2);
@@ -349,15 +353,15 @@ TEST(SecmasterWriter, ADelistedListingTakesNoNewSymbolOrSpec) {
 
   EXPECT_THROW(assign_symbol(market.secmaster, market.acme_listing, "VENUE", "ACMX",
                              delisting_day + days{1}),
-               nqdb::sqlite::error);
+               nq::db::sqlite::error);
   EXPECT_THROW(assign_symbol(market.secmaster, market.acme_listing, "VENDOR", "ACME.T",
                              delisting_day - days{1}),
-               nqdb::sqlite::error);
+               nq::db::sqlite::error);
   EXPECT_THROW(assign_listing_spec(market.secmaster, market.acme_listing,
                                    {.lot_size = quantity_nanos{nanos_per_unit}, .min_qty = {},
                                     .tick_rule = market.cent},
                                    delisting_day + days{1}),
-               nqdb::sqlite::error);
+               nq::db::sqlite::error);
   EXPECT_EQ(count(market.secmaster, "listing_symbol WHERE listing_id = 1"), 1);
   EXPECT_EQ(count(market.secmaster, "listing_spec WHERE listing_id = 1"), 1);
 }
@@ -365,14 +369,14 @@ TEST(SecmasterWriter, ADelistedListingTakesNoNewSymbolOrSpec) {
 TEST(SecmasterWriter, AFailedAssignmentKeepsThePreviousValueOpen) {
   market market = market_with_acme_and_bolt_listed();
   EXPECT_THROW(assign_symbol(market.secmaster, market.acme_listing, "VENUE", "BOLT", rename_day),
-               nqdb::sqlite::error);
+               nq::db::sqlite::error);
   EXPECT_EQ(open_symbol(market.secmaster, market.acme_listing), "ACME");
 
   EXPECT_THROW(assign_listing_spec(market.secmaster, market.acme_listing,
                                    {.lot_size = quantity_nanos{nanos_per_unit}, .min_qty = {},
                                     .tick_rule = tick_rule_id{999}},
                                    rename_day),
-               nqdb::sqlite::error);
+               nq::db::sqlite::error);
   EXPECT_EQ(count(market.secmaster, "listing_spec WHERE listing_id = 1 AND valid_until IS NULL"),
             1);
 
@@ -380,7 +384,7 @@ TEST(SecmasterWriter, AFailedAssignmentKeepsThePreviousValueOpen) {
   assign_identifier(market.secmaster, market.acme, "ISIN", "ZZ0000000001", listing_day);
   assign_identifier(market.secmaster, bolt, "ISIN", "ZZ0000000002", listing_day);
   EXPECT_THROW(assign_identifier(market.secmaster, market.acme, "ISIN", "ZZ0000000002", rename_day),
-               nqdb::sqlite::error);
+               nq::db::sqlite::error);
   EXPECT_EQ(count(market.secmaster, "instrument_identifier WHERE value = 'ZZ0000000001' "
                                     "AND valid_until IS NULL"),
             1);
@@ -429,7 +433,7 @@ TEST(SecmasterWriter, AssignIdentifierEndsThePreviousOneOfItsScheme) {
   assign_identifier(market.secmaster, market.acme, "FIGI", "ZZG000000001", listing_day);
   assign_identifier(market.secmaster, market.acme, "ISIN", "ZZ0000000002", rename_day);
 
-  nqdb::sqlite::statement row = market.secmaster.prepare(
+  nq::db::sqlite::statement row = market.secmaster.prepare(
       "SELECT scheme, value, valid_from, valid_until FROM instrument_identifier "
       "ORDER BY scheme, valid_from");
   using identifier_row = std::array<std::string, 4>;
@@ -447,7 +451,7 @@ TEST(SecmasterWriter, AssignIdentifierEndsThePreviousOneOfItsScheme) {
 TEST(SecmasterWriter, RecordCorporateActionStoresEveryField) {
   market market = market_with_acme_and_bolt_listed();
   const instrument_id spun_off = add_equity(market.secmaster, "Acme Parts");
-  const corporate_action_id split = record_corporate_action(
+  const corporate_action_id split = add_corporate_action(
       market.secmaster, {.instrument = market.acme,
                          .type = corporate_action_type::split,
                          .ex_date = rename_day,
@@ -459,7 +463,7 @@ TEST(SecmasterWriter, RecordCorporateActionStoresEveryField) {
                          .new_shares = 3,
                          .old_shares = 2,
                          .related_instrument = {}});
-  const corporate_action_id spinoff = record_corporate_action(
+  const corporate_action_id spinoff = add_corporate_action(
       market.secmaster, {.instrument = spun_off,
                          .type = corporate_action_type::spinoff,
                          .ex_date = rename_day,
@@ -473,7 +477,7 @@ TEST(SecmasterWriter, RecordCorporateActionStoresEveryField) {
                          .related_instrument = market.acme});
   EXPECT_LT(split, spinoff);
 
-  nqdb::sqlite::statement row = market.secmaster.prepare(
+  nq::db::sqlite::statement row = market.secmaster.prepare(
       "SELECT action_type, ex_date, announce_date, record_date, pay_date, cash_per_share_nanos, "
       "currency, new_shares, old_shares, related_instrument_id, instrument_id "
       "FROM corporate_action ORDER BY corporate_action_id");
@@ -502,11 +506,11 @@ TEST(SecmasterWriter, RecordCorporateActionStoresEveryField) {
 TEST(SecmasterWriter, ACallersTransactionUndoesSeveralWritesTogether) {
   market market = market_with_acme_and_bolt_listed();
   {
-    nqdb::sqlite::transaction batch(market.secmaster);
+    nq::db::sqlite::transaction batch(market.secmaster);
     assign_symbol(market.secmaster, market.acme_listing, "VENUE", "ACMX", rename_day);
     delist(market.secmaster, market.acme_listing, delisting_day);
   }
-  const snapshot loaded = load_snapshot(market.secmaster, delisting_day, everything);
+  const day_view loaded = day_view(market.secmaster, delisting_day, everything);
   ASSERT_EQ(loaded.listings().size(), 2u);
   EXPECT_EQ(listing_of(loaded, market.acme_listing).symbol, "ACME");
 }

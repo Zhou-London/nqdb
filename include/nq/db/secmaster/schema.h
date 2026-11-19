@@ -7,14 +7,19 @@
 #include <format>
 #include <string>
 #include <string_view>
+#include <utility>
+#include <vector>
 
-#include <nqdb/secmaster/date.h>
-#include <nqdb/secmaster/error.h>
-#include <nqdb/sqlite.h>
+#include <nq/db/secmaster/text.h>
+#include <nq/db/secmaster/error.h>
+#include <nq/db/sqlite.h>
 
-namespace nqdb::secmaster {
+namespace nq::db::secmaster {
 
-inline constexpr std::int64_t schema_version = 1;
+inline constexpr std::int64_t schema_version = 2;
+
+inline constexpr std::array validity_tables_of_a_listing{std::string_view{"listing_symbol"},
+                                                         std::string_view{"listing_spec"}};
 
 namespace detail {
 
@@ -101,13 +106,6 @@ BEGIN
   SELECT RAISE(ABORT, 'a listing stays on its venue');
 END;
 
-CREATE TRIGGER listing_is_delisted_once
-BEFORE UPDATE OF delisted_on ON listing
-WHEN OLD.delisted_on IS NOT NULL
-BEGIN
-  SELECT RAISE(ABORT, 'a listing is delisted once');
-END;
-
 CREATE TABLE listing_symbol (
   listing_id   INTEGER NOT NULL REFERENCES listing,
   source       TEXT NOT NULL CHECK (source <> ''),
@@ -169,7 +167,63 @@ CREATE TABLE corporate_action (
   CONSTRAINT "a cash dividend has cash"
     CHECK (action_type <> 'CASH_DIVIDEND' OR cash_per_share_nanos IS NOT NULL)
 ) STRICT;
+
+CREATE TABLE weekly_session (
+  venue_id       INTEGER NOT NULL REFERENCES venue,
+  weekday        INTEGER NOT NULL CHECK (weekday BETWEEN 1 AND 7),
+  opens_minute   INTEGER NOT NULL CHECK (opens_minute BETWEEN -1440 AND 1439),
+  closes_minute  INTEGER NOT NULL CHECK (closes_minute <= 2880),
+  valid_from     TEXT NOT NULL CHECK (valid_from IS date(valid_from)),
+  valid_until    TEXT CHECK (valid_until IS date(valid_until)),
+  PRIMARY KEY (venue_id, weekday, opens_minute, valid_from),
+  CONSTRAINT "a session closes after it opens" CHECK (opens_minute < closes_minute),
+  CONSTRAINT "a weekly session ends after it starts"
+    CHECK (valid_until IS NULL OR valid_from < valid_until)
+) STRICT;
+
+CREATE TABLE closed_day (
+  venue_id  INTEGER NOT NULL REFERENCES venue,
+  day       TEXT NOT NULL CHECK (day IS date(day)),
+  PRIMARY KEY (venue_id, day)
+) STRICT;
+
+CREATE TABLE special_session (
+  venue_id       INTEGER NOT NULL REFERENCES venue,
+  day            TEXT NOT NULL CHECK (day IS date(day)),
+  opens_minute   INTEGER NOT NULL CHECK (opens_minute BETWEEN -1440 AND 1439),
+  closes_minute  INTEGER NOT NULL CHECK (closes_minute <= 2880),
+  PRIMARY KEY (venue_id, day, opens_minute),
+  CONSTRAINT "a session closes after it opens" CHECK (opens_minute < closes_minute)
+) STRICT;
+
+CREATE TRIGGER closed_day_has_no_special_session
+BEFORE INSERT ON closed_day
+WHEN EXISTS (SELECT 1 FROM special_session WHERE venue_id = NEW.venue_id AND day = NEW.day)
+BEGIN
+  SELECT RAISE(ABORT, 'a day is closed or has special sessions, not both');
+END;
+
+CREATE TRIGGER special_session_is_on_an_open_day
+BEFORE INSERT ON special_session
+WHEN EXISTS (SELECT 1 FROM closed_day WHERE venue_id = NEW.venue_id AND day = NEW.day)
+BEGIN
+  SELECT RAISE(ABORT, 'a day is closed or has special sessions, not both');
+END;
+
+CREATE TABLE change_log (
+  change_id   INTEGER PRIMARY KEY AUTOINCREMENT,
+  changed_at  TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+  table_name  TEXT NOT NULL CHECK (table_name <> ''),
+  operation   TEXT NOT NULL CHECK (operation IN ('INSERT', 'UPDATE', 'DELETE')),
+  old_row     TEXT CHECK (json_valid(old_row)),
+  new_row     TEXT CHECK (json_valid(new_row)),
+  CONSTRAINT "a change has the rows of its operation"
+    CHECK ((old_row IS NULL) = (operation = 'INSERT')
+       AND (new_row IS NULL) = (operation = 'DELETE'))
+) STRICT;
 )sql";
+
+inline constexpr std::string_view change_log_table = "change_log";
 
 struct exclusive_validity {
   std::string_view table;
@@ -221,9 +275,6 @@ inline std::string exclusive_validity_trigger(const exclusive_validity& exclusiv
       exclusive.table, exclusive.rule, write, exclusive.same_key, exclusive.violation);
 }
 
-inline constexpr std::array validity_tables_of_a_listing{std::string_view{"listing_symbol"},
-                                                         std::string_view{"listing_spec"}};
-
 inline std::string within_listing_lifetime_trigger(std::string_view validity_table,
                                                    std::string_view write) {
   return std::format(
@@ -238,6 +289,51 @@ inline std::string within_listing_lifetime_trigger(std::string_view validity_tab
       validity_table, write);
 }
 
+inline std::vector<std::string> first_column_of_each_row(sqlite::statement row) {
+  std::vector<std::string> values;
+  while (row.next_row()) values.push_back(row.get<std::string>(0));
+  return values;
+}
+
+inline std::vector<std::string> logged_tables(sqlite::database& database) {
+  sqlite::statement table = database.prepare(
+      "SELECT name FROM sqlite_schema "
+      "WHERE type = 'table' AND name NOT LIKE 'sqlite~_%' ESCAPE '~' AND name <> ?1 "
+      "ORDER BY name");
+  table.bind(1, change_log_table);
+  return first_column_of_each_row(std::move(table));
+}
+
+inline std::string json_of_row(std::string_view old_or_new,
+                               const std::vector<std::string>& columns) {
+  std::string json = "json_object(";
+  for (const std::string& column : columns) {
+    json += std::format("{}'{}', {}.{}", json.ends_with('(') ? "" : ", ", column, old_or_new,
+                        column);
+  }
+  return json + ")";
+}
+
+inline void log_every_write(sqlite::database& database, const std::string& table) {
+  sqlite::statement column = database.prepare("SELECT name FROM pragma_table_info(?1)");
+  column.bind(1, table);
+  const std::vector<std::string> columns = first_column_of_each_row(std::move(column));
+  const std::string old_row = json_of_row("OLD", columns);
+  const std::string new_row = json_of_row("NEW", columns);
+  const auto log_after = [&](std::string_view write, std::string_view operation,
+                             std::string_view when, std::string_view old_json,
+                             std::string_view new_json) {
+    database.run_script(std::format(
+        "CREATE TRIGGER {0}_is_logged_after_{1} AFTER {1} ON {0} {2} "
+        "BEGIN INSERT INTO {3} (table_name, operation, old_row, new_row) "
+        "VALUES ('{0}', '{4}', {5}, {6}); END;",
+        table, write, when, change_log_table, operation, old_json, new_json));
+  };
+  log_after("insert", "INSERT", "", "NULL", new_row);
+  log_after("update", "UPDATE", std::format("WHEN {} <> {}", old_row, new_row), old_row, new_row);
+  log_after("delete", "DELETE", "", old_row, "NULL");
+}
+
 }  // namespace detail
 
 inline void create_schema(sqlite::database& empty_database) {
@@ -247,9 +343,12 @@ inline void create_schema(sqlite::database& empty_database) {
     for (const detail::exclusive_validity& exclusive : detail::exclusive_validities) {
       empty_database.run_script(detail::exclusive_validity_trigger(exclusive, write));
     }
-    for (const std::string_view validity_table : detail::validity_tables_of_a_listing) {
+    for (const std::string_view validity_table : validity_tables_of_a_listing) {
       empty_database.run_script(detail::within_listing_lifetime_trigger(validity_table, write));
     }
+  }
+  for (const std::string& table : detail::logged_tables(empty_database)) {
+    detail::log_every_write(empty_database, table);
   }
   empty_database.run_script(std::format("PRAGMA user_version = {}", schema_version));
   tables_with_their_triggers_and_version.commit();
@@ -285,4 +384,4 @@ inline std::filesystem::path archive(sqlite::database& database,
   return dated_copy;
 }
 
-}  // namespace nqdb::secmaster
+}  // namespace nq::db::secmaster

@@ -2,4 +2,4 @@
 
 #include "cli.h"
 
-int main(int argc, char** argv) { return nqdb::cli::run(argc, argv, std::cout, std::cerr); }
+int main(int argc, char** argv) { return nq::db::cli::run(argc, argv, std::cout, std::cerr); }

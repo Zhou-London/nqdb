@@ -1,7 +1,7 @@
 #pragma once
 
-#include <nqdb/secmaster/schema.h>
-#include <nqdb/sqlite.h>
+#include <nq/db/secmaster/schema.h>
+#include <nq/db/sqlite.h>
 
 namespace nqdb_test {
 
@@ -16,9 +16,9 @@ INSERT INTO tick_band (tick_rule_id, price_from_nanos, tick_size_nanos) VALUES
   (2, 1000000000, 10000000);
 )sql";
 
-inline nqdb::sqlite::database secmaster_with_venues() {
-  nqdb::sqlite::database database = nqdb::sqlite::database::in_memory();
-  nqdb::secmaster::create_schema(database);
+inline nq::db::sqlite::database secmaster_with_venues() {
+  nq::db::sqlite::database database = nq::db::sqlite::database::in_memory();
+  nq::db::secmaster::create_schema(database);
   database.run_script(two_venues_and_two_tick_rules);
   return database;
 }

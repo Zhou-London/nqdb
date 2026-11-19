@@ -14,7 +14,7 @@
 
 #include <nlib/strong_int.h>
 
-namespace nqdb::secmaster {
+namespace nq::db::secmaster {
 
 using nlib::strong_int;
 
@@ -30,10 +30,14 @@ using instrument_index = strong_int<struct instrument_index_tag, std::uint32_t>;
 using listing_index = strong_int<struct listing_index_tag, std::uint32_t>;
 using tick_rule_index = strong_int<struct tick_rule_index_tag, std::uint32_t>;
 
+using trading_day_index = strong_int<struct trading_day_index_tag, std::uint32_t>;
+
 using price_nanos = strong_int<struct price_nanos_tag, std::int64_t>;
 using quantity_nanos = strong_int<struct quantity_nanos_tag, std::int64_t>;
 using multiplier_nanos = strong_int<struct multiplier_nanos_tag, std::int64_t>;
 inline constexpr std::int64_t nanos_per_unit = 1'000'000'000;
+
+inline constexpr std::string_view venue_symbol_source = "VENUE";
 
 template <typename Enum>
 using enum_name = std::pair<std::string_view, Enum>;
@@ -188,16 +192,50 @@ struct tick_rule {
   }
 };
 
-struct listing {
-  listing_id id;
-  instrument_index instrument;
-  venue_index venue;
-  std::string symbol;
-  std::string currency;
-  bool is_primary;
-  quantity_nanos lot_size;
-  std::optional<quantity_nanos> min_qty;
-  tick_rule_index tick_rule;
+struct session_hours {
+  std::chrono::minutes opens;
+  std::chrono::minutes closes;
+
+  friend bool operator==(const session_hours&, const session_hours&) = default;
 };
 
-}  // namespace nqdb::secmaster
+struct session_instants {
+  std::chrono::sys_seconds opens;
+  std::chrono::sys_seconds closes;
+
+  friend bool operator==(const session_instants&, const session_instants&) = default;
+};
+
+struct weekly_session {
+  std::chrono::weekday weekday;
+  session_hours hours;
+
+  friend bool operator==(const weekly_session&, const weekly_session&) = default;
+};
+
+struct corporate_action {
+  corporate_action_id id;
+  instrument_id instrument;
+  corporate_action_type type;
+  std::chrono::sys_days ex_date;
+  std::optional<std::chrono::sys_days> announce_date;
+  std::optional<std::chrono::sys_days> record_date;
+  std::optional<std::chrono::sys_days> pay_date;
+  std::optional<price_nanos> cash_per_share;
+  std::optional<std::string> currency;
+  std::optional<std::int64_t> new_shares;
+  std::optional<std::int64_t> old_shares;
+  std::optional<instrument_id> related_instrument;
+  std::string recorded_at;
+};
+
+struct change {
+  std::int64_t id;
+  std::string changed_at;
+  std::string table;
+  std::string operation;
+  std::optional<std::string> old_row;
+  std::optional<std::string> new_row;
+};
+
+}  // namespace nq::db::secmaster

@@ -1,4 +1,4 @@
-#include <nqdb/sqlite.h>
+#include <nq/db/sqlite.h>
 
 #include <gtest/gtest.h>
 
@@ -12,8 +12,8 @@
 
 namespace {
 
-using nqdb::sqlite::database;
-using nqdb::sqlite::statement;
+using nq::db::sqlite::database;
+using nq::db::sqlite::statement;
 
 database fruit_database() {
   database fruits = database::in_memory();
@@ -53,16 +53,16 @@ TEST(Sqlite, RewindRunsAStatementAgainWithNewParameters) {
 
 TEST(Sqlite, ReportsSqliteMessagesAsErrors) {
   database fruits = fruit_database();
-  EXPECT_THROW(fruits.prepare("SELECT missing FROM fruit"), nqdb::sqlite::error);
-  EXPECT_THROW(fruits.run_script("INSERT INTO fruit VALUES (NULL, 1)"), nqdb::sqlite::error);
-  EXPECT_THROW(database::open_read_only("/nonexistent/fruit.db"), nqdb::sqlite::error);
+  EXPECT_THROW(fruits.prepare("SELECT missing FROM fruit"), nq::db::sqlite::error);
+  EXPECT_THROW(fruits.run_script("INSERT INTO fruit VALUES (NULL, 1)"), nq::db::sqlite::error);
+  EXPECT_THROW(database::open_read_only("/nonexistent/fruit.db"), nq::db::sqlite::error);
 }
 
 TEST(Sqlite, EnforcesForeignKeys) {
   database orchard = database::in_memory();
   orchard.run_script("CREATE TABLE tree (tree_id INTEGER PRIMARY KEY);"
                      "CREATE TABLE fruit (tree_id INTEGER NOT NULL REFERENCES tree);");
-  EXPECT_THROW(orchard.run_script("INSERT INTO fruit VALUES (1)"), nqdb::sqlite::error);
+  EXPECT_THROW(orchard.run_script("INSERT INTO fruit VALUES (1)"), nq::db::sqlite::error);
 }
 
 TEST(Sqlite, CopyToWritesAFileThatOpensReadOnly) {
@@ -74,14 +74,14 @@ TEST(Sqlite, CopyToWritesAFileThatOpensReadOnly) {
   statement row = reopened.prepare("SELECT count(*) FROM fruit");
   ASSERT_TRUE(row.next_row());
   EXPECT_EQ(row.get<std::int64_t>(0), 2);
-  EXPECT_THROW(reopened.run_script("DELETE FROM fruit"), nqdb::sqlite::error);
+  EXPECT_THROW(reopened.run_script("DELETE FROM fruit"), nq::db::sqlite::error);
 }
 
 TEST(Sqlite, CopyToRefusesToOverwriteAnExistingFile) {
   const nqdb_test::temporary_directory directory;
   const std::filesystem::path copy = directory.path() / "fruit.db";
   fruit_database().copy_to(copy);
-  EXPECT_THROW(fruit_database().copy_to(copy), nqdb::sqlite::error);
+  EXPECT_THROW(fruit_database().copy_to(copy), nq::db::sqlite::error);
 }
 
 TEST(Sqlite, CreateMakesANewFileAndRefusesAnExistingOne) {
@@ -91,7 +91,7 @@ TEST(Sqlite, CreateMakesANewFileAndRefusesAnExistingOne) {
     database created = database::create(file);
     created.run_script("CREATE TABLE fruit (name TEXT); INSERT INTO fruit VALUES ('fig');");
   }
-  EXPECT_THROW(database::create(file), nqdb::sqlite::error);
+  EXPECT_THROW(database::create(file), nq::db::sqlite::error);
 
   database reopened = database::open(file);
   statement row = reopened.prepare("SELECT name FROM fruit");
@@ -101,7 +101,7 @@ TEST(Sqlite, CreateMakesANewFileAndRefusesAnExistingOne) {
 
 TEST(Sqlite, OpenRefusesAMissingFile) {
   const nqdb_test::temporary_directory directory;
-  EXPECT_THROW(database::open(directory.path() / "missing.db"), nqdb::sqlite::error);
+  EXPECT_THROW(database::open(directory.path() / "missing.db"), nq::db::sqlite::error);
   EXPECT_FALSE(std::filesystem::exists(directory.path() / "missing.db"));
 }
 
@@ -114,12 +114,12 @@ std::int64_t fruit_count(database& fruits) {
 TEST(Sqlite, TransactionKeepsItsWritesOnlyWhenCommitted) {
   database fruits = fruit_database();
   {
-    nqdb::sqlite::transaction abandoned(fruits);
+    nq::db::sqlite::transaction abandoned(fruits);
     fruits.run_script("INSERT INTO fruit VALUES ('pear', 1)");
   }
   EXPECT_EQ(fruit_count(fruits), 2);
   {
-    nqdb::sqlite::transaction kept(fruits);
+    nq::db::sqlite::transaction kept(fruits);
     fruits.run_script("INSERT INTO fruit VALUES ('pear', 1)");
     kept.commit();
   }
@@ -129,9 +129,9 @@ TEST(Sqlite, TransactionKeepsItsWritesOnlyWhenCommitted) {
 TEST(Sqlite, AnAbandonedOuterTransactionUndoesACommittedInnerOne) {
   database fruits = fruit_database();
   {
-    nqdb::sqlite::transaction outer(fruits);
+    nq::db::sqlite::transaction outer(fruits);
     {
-      nqdb::sqlite::transaction inner(fruits);
+      nq::db::sqlite::transaction inner(fruits);
       fruits.run_script("INSERT INTO fruit VALUES ('pear', 1)");
       inner.commit();
     }
@@ -142,10 +142,10 @@ TEST(Sqlite, AnAbandonedOuterTransactionUndoesACommittedInnerOne) {
 
 TEST(Sqlite, AnAbandonedInnerTransactionLeavesTheOuterOneIntact) {
   database fruits = fruit_database();
-  nqdb::sqlite::transaction outer(fruits);
+  nq::db::sqlite::transaction outer(fruits);
   fruits.run_script("INSERT INTO fruit VALUES ('pear', 1)");
   {
-    nqdb::sqlite::transaction inner(fruits);
+    nq::db::sqlite::transaction inner(fruits);
     fruits.run_script("INSERT INTO fruit VALUES ('lime', 1)");
   }
   outer.commit();
@@ -158,7 +158,7 @@ TEST(Sqlite, AnAbandonedTransactionLeavesLaterWritesOutsideAnyTransaction) {
   fruit_database().copy_to(file);
   database writer = database::open(file);
   {
-    nqdb::sqlite::transaction abandoned(writer);
+    nq::db::sqlite::transaction abandoned(writer);
     writer.run_script("INSERT INTO fruit VALUES ('pear', 1)");
   }
   writer.run_script("INSERT INTO fruit VALUES ('lime', 1)");
