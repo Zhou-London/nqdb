@@ -9,6 +9,7 @@
 #include <string_view>
 #include <tuple>
 #include <utility>
+#include <vector>
 
 #include <nlib/id_table.h>
 #include <nqdb/secmaster/records.h>
@@ -18,6 +19,13 @@ namespace nqdb::secmaster {
 using nlib::id_table;
 
 inline constexpr std::string_view venue_symbol_source = "VENUE";
+
+struct listing_symbol {
+  std::string symbol;
+  listing_index listing;
+
+  friend bool operator==(const listing_symbol&, const listing_symbol&) = default;
+};
 
 class snapshot {
  public:
@@ -52,6 +60,17 @@ class snapshot {
                                             std::string_view symbol) const noexcept {
     const auto found = listing_by_symbol_.find(std::tuple{symbol_source, venue, symbol});
     return found == listing_by_symbol_.end() ? std::nullopt : std::optional{found->second};
+  }
+
+  std::vector<listing_symbol> symbols_from(std::string_view symbol_source) const {
+    std::vector<listing_symbol> symbols;
+    const auto first_of_source =
+        listing_by_symbol_.lower_bound(std::tuple{symbol_source, venue_index{}, std::string_view{}});
+    for (auto each = first_of_source;
+         each != listing_by_symbol_.end() && std::get<0>(each->first) == symbol_source; ++each) {
+      symbols.push_back({.symbol = std::get<2>(each->first), .listing = each->second});
+    }
+    return symbols;
   }
 
  private:

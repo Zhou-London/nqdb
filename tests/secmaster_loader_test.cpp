@@ -26,7 +26,7 @@ constexpr sys_days after_delisting{2025y / 1 / 1};
 constexpr instrument_id acme{1}, bolt_fund{2}, test_index{3}, index_future{4}, acme_call{5},
     foo_bar_pair{6};
 constexpr listing_id acme_on_test_exchange{1}, bolt_on_test_exchange{2}, acme_on_alternative{3},
-    pair_on_test_exchange{6};
+    future_on_test_exchange{4}, call_on_test_exchange{5}, pair_on_test_exchange{6};
 
 constexpr auto everything = [](const venue&, const instrument&) { return true; };
 
@@ -160,6 +160,50 @@ TEST(SecmasterLoader, FindsAListingByTheSymbolOfAnySource) {
   EXPECT_EQ(loaded.find_listing("VENUE", test_exchange, "ACME"), std::nullopt);
   EXPECT_EQ(loaded.find_listing("VENDOR", alternative, "ACME.T"), std::nullopt);
   EXPECT_EQ(loaded.find_venue("NONE"), std::nullopt);
+}
+
+TEST(SecmasterLoader, ListsTheSymbolsOfOneSourceInVenueThenSymbolOrder) {
+  database secmaster = fictional_market();
+  const snapshot loaded = load_snapshot(secmaster, rename_day, everything);
+  const auto index_of = [&](listing_id id) { return *loaded.listings().find(id); };
+
+  EXPECT_EQ(loaded.symbols_from("VENUE"),
+            (std::vector<listing_symbol>{{"ACMX", index_of(acme_on_test_exchange)},
+                                         {"ACMX 261218C50", index_of(call_on_test_exchange)},
+                                         {"BOLT", index_of(bolt_on_test_exchange)},
+                                         {"FOOBAR", index_of(pair_on_test_exchange)},
+                                         {"T1Z6", index_of(future_on_test_exchange)},
+                                         {"ACMX", index_of(acme_on_alternative)}}));
+  EXPECT_EQ(loaded.symbols_from("VENDOR"),
+            (std::vector<listing_symbol>{{"ACME.T", index_of(acme_on_test_exchange)}}));
+  EXPECT_TRUE(loaded.symbols_from("NONE").empty());
+  EXPECT_TRUE(loaded.symbols_from("VENDO").empty());
+  EXPECT_TRUE(loaded.symbols_from("VENUES").empty());
+}
+
+TEST(SecmasterLoader, ListsOnlyTheSymbolsThatAreValidOnTheDay) {
+  database secmaster = fictional_market();
+  const snapshot early = load_snapshot(secmaster, before_rename, everything);
+  const auto index_of = [&](listing_id id) { return *early.listings().find(id); };
+
+  EXPECT_EQ(early.symbols_from("VENUE"),
+            (std::vector<listing_symbol>{{"ACME", index_of(acme_on_test_exchange)},
+                                         {"ACMX 261218C50", index_of(call_on_test_exchange)},
+                                         {"BOLT", index_of(bolt_on_test_exchange)},
+                                         {"FOOBAR", index_of(pair_on_test_exchange)},
+                                         {"T1Z6", index_of(future_on_test_exchange)}}));
+  EXPECT_EQ(early.find_listing("VENUE", *early.find_venue("XTST"), "ACMX"), std::nullopt);
+}
+
+TEST(SecmasterLoader, ListsOnlyTheSymbolsOfListingsInTheUniverse) {
+  database secmaster = fictional_market();
+  const snapshot on_alternative = load_snapshot(
+      secmaster, rename_day, [](const venue& venue, const instrument&) { return venue.code == "XALT"; });
+
+  EXPECT_EQ(on_alternative.symbols_from("VENUE"),
+            (std::vector<listing_symbol>{
+                {"ACMX", *on_alternative.listings().find(acme_on_alternative)}}));
+  EXPECT_TRUE(on_alternative.symbols_from("VENDOR").empty());
 }
 
 TEST(SecmasterLoader, VenuesKeepTheirOptionalFields) {

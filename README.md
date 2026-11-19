@@ -95,7 +95,23 @@ const tick_rule& ticks = today.tick_rules()[today.listings()[listing].tick_rule]
 ```
 
 `listing_index` is dense: it counts from 0 in listing id order. Use it to index
-your own arrays.
+your own arrays. It is valid in one snapshot only. A snapshot of another day or
+another universe gives a listing another `listing_index`. The listing id is the
+same in every snapshot: `today.listings()[listing].id`.
+
+A consolidated feed gives a symbol without its venue. `symbols_from` lists the
+symbols of one source with their listings:
+
+```cpp
+std::map<std::string, listing_index> listing_by_vendor_symbol;
+for (listing_symbol& each : today.symbols_from("VENDOR")) {
+  const bool is_first = listing_by_vendor_symbol.emplace(std::move(each.symbol), each.listing).second;
+  if (!is_first) { /* the symbol names listings on two venues */ }
+}
+```
+
+One source may give the same symbol to listings on two venues. `symbols_from`
+returns one element for each listing, in venue order, then in symbol order.
 
 Write with the functions the command line uses:
 
@@ -114,6 +130,6 @@ all_or_nothing.commit();
 | `nqdb/secmaster/schema.h` | `create_schema()`, `open()`, `open_read_only()`, `archive()`. |
 | `nqdb/secmaster/records.h` | The ids, indexes, enums and record structs. |
 | `nqdb/secmaster/loader.h` | `load_snapshot()`, `read_instruments()`, `read_issuers()`. |
-| `nqdb/secmaster/snapshot.h` | `snapshot` and its lookups. |
+| `nqdb/secmaster/snapshot.h` | `snapshot`, `find_venue()`, `find_listing()`, `symbols_from()`. |
 | `nqdb/secmaster/writer.h` | `add_*`, `assign_*`, `delist()`, `record_corporate_action()`. |
 | `nqdb/secmaster/decimal.h` | Conversion between decimal text and 1e-9 integers. |
