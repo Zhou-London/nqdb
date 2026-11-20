@@ -1,3 +1,13 @@
+<p align="center"><img src="https://capsule-render.vercel.app/api?type=blur&height=240&color=gradient&text=NQ%20Database&fontSize=64&fontAlign=50&fontAlignY=45&desc=v0.1.0&descSize=22&descAlign=50&descAlignY=65" /></p>
+
+<p align="center">
+  <img alt="Version 0.1.0" src="https://img.shields.io/badge/version-0.1.0-blue" />
+  <img alt="C++23" src="https://img.shields.io/badge/C%2B%2B-23-00599C?logo=cplusplus&logoColor=white" />
+  <img alt="CMake 4.3+" src="https://img.shields.io/badge/CMake-4.3%2B-064F8C?logo=cmake&logoColor=white" />
+  <img alt="SQLite 3.38+" src="https://img.shields.io/badge/SQLite-3.38%2B-003B57?logo=sqlite&logoColor=white" />
+  <img alt="Header-only library" src="https://img.shields.io/badge/library-header--only-orange" />
+</p>
+
 # NQ Database
 
 Project of NowQuant.
